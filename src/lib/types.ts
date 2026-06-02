@@ -9,7 +9,10 @@ export type DateConfidence = "High" | "Medium" | "Low" | "None";
 export type DateSource =
   | "serial_rule"
   | "not_encoded"
-  | "unrecognized";
+  | "unrecognized"
+  | "openai";
+
+export type DeviceTypeSource = "static_map" | "openai";
 
 export type CapitalStatus =
   | "End of Life (Replace)"
@@ -38,6 +41,7 @@ export type EnrichedRow = {
   /** Human-friendly date honoring known precision ("May 2018", "2018", "—") */
   manufactured_display: string;
   device_type: string;
+  device_type_source: DeviceTypeSource;
   equipment_age_years: number | null;
   capital_status: CapitalStatus;
   date_confidence: DateConfidence;

@@ -4,10 +4,11 @@ import { parseCsvFile, parseCsvString } from "../lib/csv";
 import sampleCsv from "../../challenge_data-v1.csv?raw";
 
 type Props = {
-  onData: (rows: RawRow[], fileName: string) => void;
+  onData: (rows: RawRow[], fileName: string) => void | Promise<void>;
+  disabled?: boolean;
 };
 
-export default function UploadDropzone({ onData }: Props) {
+export default function UploadDropzone({ onData, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,13 +72,15 @@ export default function UploadDropzone({ onData }: Props) {
       <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
         <button
           onClick={() => inputRef.current?.click()}
-          className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-500"
+          disabled={disabled}
+          className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Choose file
         </button>
         <button
           onClick={() => onData(parseCsvString(sampleCsv), "challenge_data-v1.csv")}
-          className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          disabled={disabled}
+          className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Load sample dataset
         </button>

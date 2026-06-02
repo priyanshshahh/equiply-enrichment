@@ -1,10 +1,16 @@
 import type { EnrichedRow } from "../lib/types";
 import { downloadCsv, enrichedToCsv } from "../lib/csv";
 
-export default function ExportButton({ rows }: { rows: EnrichedRow[] }) {
+export default function ExportButton({
+  rows,
+  filename = "enriched.csv",
+}: {
+  rows: EnrichedRow[];
+  filename?: string;
+}) {
   return (
     <button
-      onClick={() => downloadCsv("equiply_enriched.csv", enrichedToCsv(rows))}
+      onClick={() => downloadCsv(filename, enrichedToCsv(rows))}
       disabled={rows.length === 0}
       className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
     >

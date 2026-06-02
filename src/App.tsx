@@ -3,26 +3,53 @@ import type { EnrichedRow, RawRow } from "./lib/types";
 import {
   computeKpis,
   deviceTypeDistribution,
-  enrichDataset,
+  enrichDatasetHybrid,
   replacementTimeline,
+  type TokenStats,
 } from "./lib/dataEngine";
+import { DEFAULT_MODEL, type AllowedModel } from "./lib/openaiFallback";
 import UploadDropzone from "./components/UploadDropzone";
+import OpenAiSettings from "./components/OpenAiSettings";
 import KpiCards from "./components/KpiCards";
 import DeviceTypePie from "./components/DeviceTypePie";
 import ReplacementTimelineBar from "./components/ReplacementTimelineBar";
 import EnrichedTable from "./components/EnrichedTable";
 import ExportButton from "./components/ExportButton";
+import { getOpenAiKeyFromEnv } from "./lib/env";
 
 export default function App() {
   const [rows, setRows] = useState<EnrichedRow[] | null>(null);
   const [fileName, setFileName] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState(getOpenAiKeyFromEnv);
+  const [model, setModel] = useState<AllowedModel>(DEFAULT_MODEL);
+  const [enableLlm, setEnableLlm] = useState(() => Boolean(getOpenAiKeyFromEnv()));
+  const [tokenStats, setTokenStats] = useState<TokenStats | null>(null);
 
-  const handleData = (raw: RawRow[], name: string) => {
-    setRows(enrichDataset(raw));
-    setFileName(name);
+  const handleData = async (raw: RawRow[], name: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await enrichDatasetHybrid(raw, {
+        apiKey: enableLlm ? apiKey.trim() : undefined,
+        model,
+        skipLLM: !enableLlm || !apiKey.trim(),
+      });
+      setRows(result.rows);
+      setTokenStats(result.tokenStats);
+      setFileName(name);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Enrichment failed.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const kpis = useMemo(() => (rows ? computeKpis(rows) : null), [rows]);
+  const kpis = useMemo(
+    () => (rows ? computeKpis(rows, tokenStats ?? undefined) : null),
+    [rows, tokenStats]
+  );
   const pie = useMemo(() => (rows ? deviceTypeDistribution(rows) : []), [rows]);
   const timeline = useMemo(() => (rows ? replacementTimeline(rows) : []), [rows]);
 
@@ -41,9 +68,13 @@ export default function App() {
         {rows && (
           <div className="flex items-center gap-3">
             <span className="hidden text-xs text-slate-500 sm:inline">{fileName}</span>
-            <ExportButton rows={rows} />
+    <ExportButton rows={rows} filename="enriched.csv" />
             <button
-              onClick={() => setRows(null)}
+              onClick={() => {
+                setRows(null);
+                setTokenStats(null);
+                setError(null);
+              }}
               className="rounded-lg border border-white/15 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/5"
             >
               New file
@@ -60,11 +91,23 @@ export default function App() {
                 Turn raw equipment serials into a capital plan
               </h2>
               <p className="mt-2 text-sm text-slate-400">
-                Deterministic enrichment - manufactured date, device type, asset age, and
-                replacement tier - computed entirely in your browser. No data leaves this page.
+                Hybrid pipeline: deterministic serial decoders first, then deduplicated LLM
+                gap-fill only where rules leave gaps — never guessing Hospira/Baxter dates.
               </p>
             </div>
-            <UploadDropzone onData={handleData} />
+            <OpenAiSettings
+              apiKey={apiKey}
+              onApiKeyChange={setApiKey}
+              model={model}
+              onModelChange={setModel}
+              enableLlm={enableLlm}
+              onEnableLlmChange={setEnableLlm}
+            />
+            <UploadDropzone onData={handleData} disabled={loading} />
+            {loading && (
+              <p className="mt-4 text-center text-sm text-brand-300">Enriching dataset…</p>
+            )}
+            {error && <p className="mt-4 text-center text-sm text-rose-400">{error}</p>}
           </div>
         ) : (
           <>
@@ -75,8 +118,8 @@ export default function App() {
             </div>
             <EnrichedTable rows={rows} />
             <p className="pb-6 text-center text-xs text-slate-600">
-              Every date carries a provenance trail (source + confidence). Hover a confidence
-              indicator to see exactly how the date was derived.
+              Provenance: hover confidence for decode method. LLM assists only deduplicated
+              manufacturer|model gaps; serial rules always win when present.
             </p>
           </>
         )}

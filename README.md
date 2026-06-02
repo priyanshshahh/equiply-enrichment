@@ -5,8 +5,9 @@ A fully client-side React + TypeScript tool that ingests a hospital equipment CS
 and **device type**, then translates that into a hospital capital-planning view
 (asset age + replacement tier), with charts, a sorted register, and CSV export.
 
-Everything runs in the browser. No backend, no network calls, no LLM at runtime —
-so it is instant, offline, reproducible, and fully auditable.
+Hybrid pipeline: **deterministic serial decoders run first** (zero tokens), then an
+optional **deduplicated OpenAI gap-fill** (`gpt-5.4-nano`) for rows rules cannot
+resolve. Hospira/Baxter sequential serials are never sent for date guessing.
 
 ## Demo video
 
@@ -33,10 +34,21 @@ npm run export
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173  (click "Load sample dataset")
-npm run build      # type-check + production build
-npm run verify     # run the data engine over challenge_data-v1.csv and print coverage
+npm run dev        # http://localhost:5173 — paste API key or set VITE_OPENAI_API_KEY in .env
+npm run build
+npm run verify     # local regex coverage report (no API spend)
+npm run export     # write enriched.csv via local rules only
 ```
+
+### OpenAI hybrid gap-fill (hackathon)
+
+1. Enable **LLM gap-fill** on the upload screen and paste your API key (or set `VITE_OPENAI_API_KEY` in a local `.env` — never commit it).
+2. **Stage 1:** normalize manufacturers, static `device_type` map, per-vendor serial regex.
+3. **Stage 2:** collect rows still missing `device_type` or decodable dates (excluding Hospira/Baxter `not_encoded`), **dedupe to unique `MFR|MODEL` keys**, one batched `gpt-5.4-nano` call.
+4. **Stage 3:** merge with provenance (`date_source`, `device_type_source`), compute age + capital status.
+5. Dashboard **Token Efficiency** KPI shows tokens used and **% saved via deduplication** vs sending every row.
+
+Budget cap: **$5** estimated spend (nano pricing). Model choices: `gpt-5.4-nano` (default), `gpt-5.4-mini` (fallback in UI if needed).
 
 ## How enrichment works (the part that matters)
 

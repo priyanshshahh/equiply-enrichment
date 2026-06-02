@@ -48,6 +48,7 @@ export function enrichedToCsv(rows: EnrichedRow[]): string {
     date_confidence: r.date_confidence,
     date_source: r.date_source,
     date_method: r.date_method,
+    device_type_source: r.device_type_source,
   }));
   return Papa.unparse(records);
 }

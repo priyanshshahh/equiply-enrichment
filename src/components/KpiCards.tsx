@@ -1,4 +1,5 @@
 import type { Kpis } from "../lib/dataEngine";
+import { MAX_BUDGET_USD } from "../lib/openaiFallback";
 
 type Card = {
   label: string;
@@ -18,7 +19,7 @@ export default function KpiCards({ kpis }: { kpis: Kpis }) {
     {
       label: "Immediate Replacement",
       value: kpis.needsReplacement.toLocaleString(),
-      sub: `End of life (>10 yrs)`,
+      sub: "End of life (>10 yrs)",
       accent: "text-rose-300",
     },
     {
@@ -33,10 +34,19 @@ export default function KpiCards({ kpis }: { kpis: Kpis }) {
       sub: "Rows with a decoded date",
       accent: "text-emerald-300",
     },
+    {
+      label: "Token Efficiency",
+      value: kpis.tokensUsed > 0 ? kpis.tokensUsed.toLocaleString() : "0",
+      sub:
+        kpis.tokensUsed > 0
+          ? `${kpis.dedupeSavedPct.toFixed(0)}% tokens saved via dedupe · ~$${kpis.estimatedCostUsd.toFixed(4)} / $${MAX_BUDGET_USD}`
+          : "Local rules only (0 LLM tokens)",
+      accent: "text-violet-300",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
       {cards.map((c) => (
         <div
           key={c.label}

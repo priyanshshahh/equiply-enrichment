@@ -1,7 +1,13 @@
 import type { CapitalStatus, EnrichedRow, RawRow } from "./types";
-import { normalizeManufacturer, normalizeModel } from "./normalize";
-import { lookupDeviceType } from "./deviceTypes";
+import { comboKey, normalizeManufacturer, normalizeModel } from "./normalize";
+import { lookupDeviceType, UNKNOWN_DEVICE_TYPE } from "./deviceTypes";
 import { decodeDate, formatManufacturedDate } from "./dateDecoders";
+import {
+  runLLMGapFill,
+  rowsNeedingGapFill,
+  type AllowedModel,
+  type LLMGapFillResult,
+} from "./openaiFallback";
 
 /**
  * Fixed reference year so age/status output is reproducible regardless of when
@@ -20,7 +26,41 @@ function capitalStatus(age: number | null): CapitalStatus {
   return "Active";
 }
 
-export function enrichRow(raw: RawRow): EnrichedRow {
+function pad2(n: number): string {
+  return n.toString().padStart(2, "0");
+}
+
+function applyCapitalMetrics(row: EnrichedRow): EnrichedRow {
+  const equipment_age_years =
+    row.manufactured_date != null
+      ? CURRENT_YEAR - new Date(row.manufactured_date).getUTCFullYear()
+      : null;
+  return {
+    ...row,
+    equipment_age_years,
+    capital_status: capitalStatus(equipment_age_years),
+    manufactured_display: formatManufacturedDateFromRow(row),
+  };
+}
+
+function formatManufacturedDateFromRow(row: EnrichedRow): string {
+  if (!row.manufactured_date) return "—";
+  const d = new Date(row.manufactured_date);
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1;
+  const MONTH_NAMES = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  if (row.date_confidence === "Low" || row.date_source === "openai") {
+    // LLM / year-only inference
+    if (month === 1 && d.getUTCDate() === 1) return String(year);
+  }
+  return `${MONTH_NAMES[month - 1]} ${year}`;
+}
+
+/** Stage 1: deterministic local enrichment (regex + static map). */
+export function enrichRowLocal(raw: RawRow): EnrichedRow {
   const manufacturer = normalizeManufacturer(raw.manufacturer);
   const model = normalizeModel(raw.model);
   const serial = (raw.serial_number ?? "").trim();
@@ -37,6 +77,7 @@ export function enrichRow(raw: RawRow): EnrichedRow {
     manufactured_date: decoded.date,
     manufactured_display: formatManufacturedDate(decoded),
     device_type,
+    device_type_source: "static_map",
     equipment_age_years,
     capital_status: capitalStatus(equipment_age_years),
     date_confidence: decoded.confidence,
@@ -45,17 +86,156 @@ export function enrichRow(raw: RawRow): EnrichedRow {
   };
 }
 
+/** Fix device_type_source for static map hits. */
+function finalizeLocalRow(row: EnrichedRow): EnrichedRow {
+  return row;
+}
+
 /** Sort key: known dates ascending first; unknown dates sink to the bottom. */
 function sortValue(row: EnrichedRow): number {
   if (!row.manufactured_date) return Number.POSITIVE_INFINITY;
   return new Date(row.manufactured_date).getTime();
 }
 
+export function sortEnrichedRows(rows: EnrichedRow[]): EnrichedRow[] {
+  return [...rows].sort((a, b) => sortValue(a) - sortValue(b));
+}
+
+/** Synchronous path — local rules only (scripts / offline). */
 export function enrichDataset(rows: RawRow[]): EnrichedRow[] {
-  return rows
-    .filter((r) => (r.manufacturer ?? "").trim() || (r.model ?? "").trim() || (r.serial_number ?? "").trim())
-    .map(enrichRow)
-    .sort((a, b) => sortValue(a) - sortValue(b));
+  return sortEnrichedRows(
+    rows
+      .filter(
+        (r) =>
+          (r.manufacturer ?? "").trim() ||
+          (r.model ?? "").trim() ||
+          (r.serial_number ?? "").trim()
+      )
+      .map((r) => finalizeLocalRow(enrichRowLocal(r)))
+  );
+}
+
+export type TokenStats = {
+  tokensUsed: number;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedCostUsd: number;
+  dedupeSavedPct: number;
+  uniqueCombosSent: number;
+  rowsEligibleForLlm: number;
+  llmInvoked: boolean;
+  model: string | null;
+};
+
+export type HybridEnrichmentResult = {
+  rows: EnrichedRow[];
+  tokenStats: TokenStats;
+};
+
+function emptyTokenStats(): TokenStats {
+  return {
+    tokensUsed: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    estimatedCostUsd: 0,
+    dedupeSavedPct: 100,
+    uniqueCombosSent: 0,
+    rowsEligibleForLlm: 0,
+    llmInvoked: false,
+    model: null,
+  };
+}
+
+function mergeLLMResults(
+  rows: EnrichedRow[],
+  llm: LLMGapFillResult
+): EnrichedRow[] {
+  return rows.map((row) => {
+    const key = comboKey(row.manufacturer, row.model);
+    const hit = llm.map[key];
+    if (!hit) return row;
+
+    let next: EnrichedRow = { ...row };
+
+    if (row.device_type === UNKNOWN_DEVICE_TYPE && hit.device_type) {
+      next = {
+        ...next,
+        device_type: hit.device_type,
+        device_type_source: "openai",
+        date_method:
+          next.date_method +
+          (next.date_method ? " | " : "") +
+          `Device type from LLM (${llm.model}) for combo ${key}`,
+      };
+    }
+
+    const canInferDate =
+      next.manufactured_date == null &&
+      next.date_source !== "not_encoded" &&
+      hit.launch_year != null &&
+      hit.launch_year >= 1970 &&
+      hit.launch_year <= CURRENT_YEAR;
+
+    if (canInferDate) {
+      next = {
+        ...next,
+        manufactured_date: `${hit.launch_year}-${pad2(1)}-01`,
+        date_confidence: "Low",
+        date_source: "openai",
+        date_method: `LLM launch_year ${hit.launch_year} for ${key} (model-era estimate, not serial-derived)`,
+      };
+    }
+
+    return applyCapitalMetrics(next);
+  });
+}
+
+/**
+ * Hybrid async pipeline:
+ * 1) Local regex + static map (zero tokens)
+ * 2) Deduped LLM gap-fill for remaining gaps (gpt-5.4-nano)
+ * 3) Merge + capital metrics + sort
+ */
+export async function enrichDatasetHybrid(
+  rawRows: RawRow[],
+  options?: { apiKey?: string; model?: AllowedModel; skipLLM?: boolean }
+): Promise<HybridEnrichmentResult> {
+  const local = enrichDataset(rawRows);
+  const gapRows = rowsNeedingGapFill(local);
+
+  if (!options?.apiKey?.trim() || options.skipLLM || gapRows.length === 0) {
+    return {
+      rows: local,
+      tokenStats: {
+        ...emptyTokenStats(),
+        rowsEligibleForLlm: gapRows.length,
+        dedupeSavedPct: gapRows.length > 0 ? 100 : 100,
+      },
+    };
+  }
+
+  const llm = await runLLMGapFill(
+    options.apiKey,
+    gapRows,
+    options.model
+  );
+
+  const merged = sortEnrichedRows(mergeLLMResults(local, llm));
+
+  return {
+    rows: merged,
+    tokenStats: {
+      tokensUsed: llm.usage.total_tokens,
+      promptTokens: llm.usage.prompt_tokens,
+      completionTokens: llm.usage.completion_tokens,
+      estimatedCostUsd: llm.estimatedCostUsd,
+      dedupeSavedPct: llm.dedupeSavedPct,
+      uniqueCombosSent: llm.uniqueCombosSent,
+      rowsEligibleForLlm: llm.rowsEligible,
+      llmInvoked: true,
+      model: llm.model,
+    },
+  };
 }
 
 // --- Aggregations for the dashboard -----------------------------------------
@@ -106,15 +286,19 @@ export type Kpis = {
   confidenceRate: number;
   datedRate: number;
   deviceTypeCount: number;
+  tokensUsed: number;
+  dedupeSavedPct: number;
+  estimatedCostUsd: number;
 };
 
-export function computeKpis(rows: EnrichedRow[]): Kpis {
+export function computeKpis(rows: EnrichedRow[], tokenStats?: TokenStats): Kpis {
   const total = rows.length;
   const needsReplacement = rows.filter((r) => r.capital_status === "End of Life (Replace)").length;
   const reviewSoon = rows.filter((r) => r.capital_status === "Review").length;
   const withConfidence = rows.filter((r) => r.date_confidence !== "None").length;
   const dated = rows.filter((r) => r.manufactured_date != null).length;
   const types = new Set(rows.map((r) => r.device_type));
+  const ts = tokenStats ?? emptyTokenStats();
   return {
     totalAssets: total,
     needsReplacement,
@@ -122,5 +306,8 @@ export function computeKpis(rows: EnrichedRow[]): Kpis {
     confidenceRate: total ? (withConfidence / total) * 100 : 0,
     datedRate: total ? (dated / total) * 100 : 0,
     deviceTypeCount: types.size,
+    tokensUsed: ts.tokensUsed,
+    dedupeSavedPct: ts.dedupeSavedPct,
+    estimatedCostUsd: ts.estimatedCostUsd,
   };
 }
