@@ -9,6 +9,8 @@ Hybrid pipeline: **deterministic serial decoders run first** (zero tokens), then
 optional **deduplicated OpenAI gap-fill** (`gpt-5.4-nano`) for rows rules cannot
 resolve. Hospira/Baxter sequential serials are never sent for date guessing.
 
+**Full product documentation:** [DOCUMENTATION.md](./DOCUMENTATION.md)
+
 ## Demo video
 
 **[Watch the demo video](https://youtu.be/YOUR_VIDEO_ID)** — walkthrough of upload, enrichment pipeline, charts, and export.
